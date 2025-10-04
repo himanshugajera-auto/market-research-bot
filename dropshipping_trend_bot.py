@@ -42,7 +42,7 @@ class DropshippingTrendBot:
                 url = f'https://www.amazon.in/gp/bestsellers/{category}'
                 response = requests.get(url, headers={
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                })
+                }, timeout=10)
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
                 # Find product listings (structure may vary)
@@ -76,7 +76,7 @@ class DropshippingTrendBot:
             url = 'https://www.flipkart.com/'
             response = requests.get(url, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            })
+            }, timeout=10)
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # Flipkart homepage trending items
@@ -117,7 +117,8 @@ class DropshippingTrendBot:
                         'q': query,
                         'gl': 'in',  # India
                         'num': 10
-                    }
+                    },
+                    timeout=10
                 )
                 data = response.json()
                 
@@ -169,7 +170,7 @@ class DropshippingTrendBot:
             url = 'https://www.meesho.com/'
             response = requests.get(url, headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            })
+            }, timeout=10)
             soup = BeautifulSoup(response.text, 'html.parser')
             
             print("  Meesho scraping completed")
@@ -268,7 +269,8 @@ Focus on practical, actionable insights for the Indian market specifically."""
     def create_google_doc(self, analysis, data_summary):
         """Create Google Doc with dropshipping trends report"""
         
-        title = f"India Dropshipping Trends - {datetime.now().strftime('%B %d, %Y')}"
+        now = datetime.now()
+        title = f"{now.strftime('%Y-%m-%d_%H-%M')}_DS"
         
         try:
             doc = self.docs_service.documents().create(
@@ -278,12 +280,16 @@ Focus on practical, actionable insights for the Indian market specifically."""
             doc_id = doc['documentId']
             
             content = f"""INDIA DROPSHIPPING TRENDS REPORT
-{datetime.now().strftime('%B %d, %Y')}
+Generated: {now.strftime('%B %d, %Y at %I:%M %p IST')}
+Report ID: {now.strftime('%Y%m%d_%H%M')}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📊 DATA SOURCES
 
+Collection Time: {now.strftime('%Y-%m-%d %H:%M:%S')}
+
+Platforms Monitored:
 • Amazon India Best Sellers
 • Flipkart Trending
 • Google Trends (India)
