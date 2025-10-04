@@ -9,18 +9,26 @@ from datetime import datetime
 import anthropic
 import requests
 from bs4 import BeautifulSoup
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 import re
 
 class MultiCountryDropshippingBot:
     def __init__(self):
         self.claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         
-        # Google APIs
-        creds = Credentials.from_authorized_user_info(
-            json.loads(os.getenv("GOOGLE_CREDENTIALS"))
+
+        # Google APIs - use service account for automation
+        credentials_dict = json.loads(os.getenv("GOOGLE_CREDENTIALS"))
+        creds = service_account.Credentials.from_service_account_info(
+        credentials_dict,
+        scopes=[
+                'https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/documents',
+                'https://www.googleapis.com/auth/drive.file'
+            ]
         )
         self.docs_service = build('docs', 'v1', credentials=creds)
         self.sheets_service = build('sheets', 'v4', credentials=creds)
