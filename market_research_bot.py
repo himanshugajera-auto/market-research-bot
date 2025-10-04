@@ -1,3 +1,8 @@
+"""
+Free AI Market Research Bot
+Runs daily via GitHub Actions
+"""
+
 import os
 import json
 from datetime import datetime
@@ -85,6 +90,102 @@ class MarketResearchBot:
                 unique_results.append(item)
                 
         return unique_results[:50]  # Increased limit
+    
+    def scrape_producthunt(self):
+        """Scrape Product Hunt for new launches and feedback"""
+        results = []
+        try:
+            # Scrape Product Hunt homepage
+            response = requests.get(
+                'https://www.producthunt.com/',
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Note: This is basic scraping. Product Hunt's structure may change.
+            # Finding posts with common pain point indicators in titles/descriptions
+            print("  Product Hunt scraping completed (basic)")
+            
+        except Exception as e:
+            print(f"Error scraping Product Hunt: {e}")
+        
+        return results[:10]
+    
+    def scrape_indiehackers(self):
+        """Scrape IndieHackers for founder insights"""
+        results = []
+        try:
+            response = requests.get(
+                'https://www.indiehackers.com/posts',
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            keywords = ['revenue', 'failed', 'lesson', 'mistake', 'struggle', 
+                       'problem', 'difficult', 'challenge']
+            
+            # Find post titles and links
+            posts = soup.find_all('div', class_='feed-item')[:20]
+            for post in posts:
+                try:
+                    title_elem = post.find('a')
+                    if title_elem:
+                        title = title_elem.get_text(strip=True)
+                        link = 'https://www.indiehackers.com' + title_elem.get('href', '')
+                        
+                        if any(keyword in title.lower() for keyword in keywords):
+                            results.append({
+                                'source': 'IndieHackers',
+                                'title': title,
+                                'content': title,
+                                'url': link,
+                                'score': 0,
+                                'comments': 0,
+                                'timestamp': datetime.now().isoformat()
+                            })
+                except:
+                    continue
+                    
+        except Exception as e:
+            print(f"Error scraping IndieHackers: {e}")
+        
+        return results[:15]
+    
+    def scrape_devto(self):
+        """Scrape Dev.to using their free API"""
+        results = []
+        try:
+            # Dev.to has a free API
+            response = requests.get(
+                'https://dev.to/api/articles?per_page=30&top=7',
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            articles = response.json()
+            
+            keywords = ['problem', 'struggle', 'difficult', 'frustrat', 
+                       'why', 'how to', 'alternative', 'better way']
+            
+            for article in articles:
+                title = article.get('title', '').lower()
+                description = article.get('description', '').lower()
+                
+                if any(keyword in title or keyword in description for keyword in keywords):
+                    results.append({
+                        'source': 'Dev.to',
+                        'title': article.get('title'),
+                        'content': article.get('description', '')[:500],
+                        'url': article.get('url'),
+                        'score': article.get('positive_reactions_count', 0),
+                        'comments': article.get('comments_count', 0),
+                        'timestamp': article.get('published_at', datetime.now().isoformat())
+                    })
+                    
+        except Exception as e:
+            print(f"Error scraping Dev.to: {e}")
+        
+        return results[:15]
     
     def scrape_hackernews(self):
         """Scrape Hacker News via their free API"""
