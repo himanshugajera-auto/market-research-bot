@@ -12,6 +12,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import requests
+from bs4 import BeautifulSoup
 
 class MarketResearchBot:
     def __init__(self):
@@ -297,7 +298,8 @@ Format your response in clear sections with headers."""
     def create_google_doc(self, analysis, data_summary):
         """Create a Google Doc with the research report"""
         
-        title = f"Market Research Report - {datetime.now().strftime('%B %d, %Y')}"
+        now = datetime.now()
+        title = f"{now.strftime('%Y-%m-%d_%H-%M')}_MR"
         
         try:
             # Create new document
@@ -379,7 +381,16 @@ Top Discussions:
         hn_data = self.scrape_hackernews()
         print(f"  ✓ Hacker News: {len(hn_data)} items")
         
-        all_data = reddit_data + hn_data
+        ph_data = self.scrape_producthunt()
+        print(f"  ✓ Product Hunt: {len(ph_data)} items")
+        
+        ih_data = self.scrape_indiehackers()
+        print(f"  ✓ IndieHackers: {len(ih_data)} items")
+        
+        devto_data = self.scrape_devto()
+        print(f"  ✓ Dev.to: {len(devto_data)} items")
+        
+        all_data = reddit_data + hn_data + ph_data + ih_data + devto_data
         print(f"\n📦 Total data points: {len(all_data)}")
         
         if len(all_data) == 0:
