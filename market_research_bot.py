@@ -1,8 +1,3 @@
-"""
-Free AI Market Research Bot
-Runs daily via GitHub Actions
-"""
-
 import os
 import json
 from datetime import datetime
@@ -34,24 +29,26 @@ class MarketResearchBot:
         
     def scrape_reddit(self):
         """Scrape Reddit for pain points and opportunities"""
-        subreddits = ['SaaS', 'Entrepreneur', 'smallbusiness', 'startups']
+        subreddits = ['SaaS', 'Entrepreneur', 'smallbusiness', 'startups', 'indiehackers']
+        # Expanded keywords for better matching
         keywords = ['frustrated', 'need alternative', 'looking for solution', 
-                   'wish there was', 'painful', 'inefficient']
+                   'wish there was', 'painful', 'inefficient', 'problem with',
+                   'need help', 'struggle', 'difficult', 'annoying', 'hate that',
+                   'better way', 'recommendations for', 'alternatives to']
         
         results = []
         for sub in subreddits:
             try:
                 subreddit = self.reddit.subreddit(sub)
                 
-                # Get hot posts
-                for post in subreddit.hot(limit=20):
-                    # Check if post contains pain point keywords
+                # Get hot AND new posts for more coverage
+                for post in list(subreddit.hot(limit=30)) + list(subreddit.new(limit=20)):
                     text = f"{post.title} {post.selftext}".lower()
                     if any(keyword in text for keyword in keywords):
                         results.append({
                             'source': f'r/{sub}',
                             'title': post.title,
-                            'content': post.selftext[:500],
+                            'content': post.selftext[:500] if post.selftext else post.title,
                             'url': f"https://reddit.com{post.permalink}",
                             'upvotes': post.score,
                             'comments': post.num_comments,
@@ -59,59 +56,83 @@ class MarketResearchBot:
                         })
                 
                 # Get top comments from popular posts
-                for post in subreddit.hot(limit=10):
-                    post.comments.replace_more(limit=0)
-                    for comment in post.comments[:5]:
-                        text = comment.body.lower()
-                        if any(keyword in text for keyword in keywords) and len(comment.body) > 100:
-                            results.append({
-                                'source': f'r/{sub}',
-                                'title': f"Comment on: {post.title}",
-                                'content': comment.body[:500],
-                                'url': f"https://reddit.com{comment.permalink}",
-                                'upvotes': comment.score,
-                                'comments': 0,
-                                'timestamp': datetime.fromtimestamp(comment.created_utc).isoformat()
-                            })
+                for post in subreddit.hot(limit=15):
+                    try:
+                        post.comments.replace_more(limit=0)
+                        for comment in post.comments[:8]:
+                            text = comment.body.lower()
+                            if any(keyword in text for keyword in keywords) and len(comment.body) > 80:
+                                results.append({
+                                    'source': f'r/{sub}',
+                                    'title': f"Comment on: {post.title[:80]}",
+                                    'content': comment.body[:500],
+                                    'url': f"https://reddit.com{comment.permalink}",
+                                    'upvotes': comment.score,
+                                    'comments': 0,
+                                    'timestamp': datetime.fromtimestamp(comment.created_utc).isoformat()
+                                })
+                    except:
+                        continue
             except Exception as e:
                 print(f"Error scraping r/{sub}: {e}")
                 
-        return results[:30]  # Limit to 30 items to save API costs
+        # Remove duplicates based on URL
+        seen_urls = set()
+        unique_results = []
+        for item in results:
+            if item['url'] not in seen_urls:
+                seen_urls.add(item['url'])
+                unique_results.append(item)
+                
+        return unique_results[:50]  # Increased limit
     
     def scrape_hackernews(self):
         """Scrape Hacker News via their free API"""
         results = []
         try:
-            # Get top stories
+            # Get top stories AND ask stories
             top_stories = requests.get(
                 'https://hacker-news.firebaseio.com/v0/topstories.json'
+            ).json()[:50]
+            
+            ask_stories = requests.get(
+                'https://hacker-news.firebaseio.com/v0/askstories.json'
             ).json()[:30]
             
-            for story_id in top_stories:
-                story = requests.get(
-                    f'https://hacker-news.firebaseio.com/v0/item/{story_id}.json'
-                ).json()
-                
-                if story and story.get('type') == 'story':
-                    title = story.get('title', '').lower()
-                    text = story.get('text', '').lower()
+            all_story_ids = list(set(top_stories + ask_stories))
+            
+            keywords = ['need', 'looking for', 'alternative', 'frustrated', 
+                       'problem', 'struggle', 'difficult', 'recommendation']
+            
+            for story_id in all_story_ids[:80]:
+                try:
+                    story = requests.get(
+                        f'https://hacker-news.firebaseio.com/v0/item/{story_id}.json',
+                        timeout=5
+                    ).json()
                     
-                    # Look for Ask HN or pain points
-                    if 'ask hn' in title or any(word in title for word in ['need', 'looking for', 'alternative']):
-                        results.append({
-                            'source': 'Hacker News',
-                            'title': story.get('title'),
-                            'content': story.get('text', '')[:500],
-                            'url': f"https://news.ycombinator.com/item?id={story_id}",
-                            'score': story.get('score', 0),
-                            'comments': story.get('descendants', 0),
-                            'timestamp': datetime.fromtimestamp(story.get('time', 0)).isoformat()
-                        })
+                    if story and story.get('type') in ['story', 'ask']:
+                        title = story.get('title', '').lower()
+                        text = story.get('text', '').lower()
+                        
+                        # Look for Ask HN or pain points
+                        if 'ask hn' in title or 'show hn' in title or any(word in title or word in text for word in keywords):
+                            results.append({
+                                'source': 'Hacker News',
+                                'title': story.get('title'),
+                                'content': story.get('text', story.get('title', ''))[:500],
+                                'url': f"https://news.ycombinator.com/item?id={story_id}",
+                                'score': story.get('score', 0),
+                                'comments': story.get('descendants', 0),
+                                'timestamp': datetime.fromtimestamp(story.get('time', 0)).isoformat()
+                            })
+                except:
+                    continue
                         
         except Exception as e:
             print(f"Error scraping Hacker News: {e}")
             
-        return results[:15]
+        return results[:30]
     
     def analyze_with_ai(self, data):
         """Use Claude to analyze the collected data"""
