@@ -1,0 +1,31 @@
+name: Product Review Dashboard
+
+on:
+  schedule:
+    - cron: '0 14 * * *'  # 2 PM UTC daily (7:30 PM IST)
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  multi-country-research:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run multi-country dropshipping bot
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+        run: python multi_country_dropshipping.py
