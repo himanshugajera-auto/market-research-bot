@@ -1,10 +1,6 @@
 """
-Enhanced Multi-Country Dropshipping Bot v2
-- Parses trend articles to extract product names
-- Searches Amazon for actual products + prices
-- Searches AliExpress for supplier costs
-- Calculates profit margins
-- Saves only profitable products
+Multi-Country Dropshipping Product Trend Finder with Scoring
+Saves scored products to Google Sheets for dashboard review
 """
 
 import os
@@ -13,21 +9,22 @@ from datetime import datetime
 import anthropic
 import requests
 from bs4 import BeautifulSoup
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 import re
-import time
 
-class EnhancedDropshippingBot:
+class MultiCountryDropshippingBot:
     def __init__(self):
         self.claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         
-        # Google APIs - service account
+
+        # Google APIs - use service account for automation
         credentials_dict = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT"))
         creds = service_account.Credentials.from_service_account_info(
-            credentials_dict,
-            scopes=[
+        credentials_dict,
+        scopes=[
                 'https://www.googleapis.com/auth/spreadsheets',
                 'https://www.googleapis.com/auth/documents',
                 'https://www.googleapis.com/auth/drive.file'
@@ -37,390 +34,289 @@ class EnhancedDropshippingBot:
         self.sheets_service = build('sheets', 'v4', credentials=creds)
         self.drive_service = build('drive', 'v3', credentials=creds)
         
+        # Google Sheet ID for product database
         self.sheet_id = os.getenv("PRODUCT_SHEET_ID", "")
-        self.serper_key = os.getenv("SERPER_API_KEY")
         
         # Safe categories
         self.safe_categories = [
-            'home decor', 'kitchen', 'fitness', 'pet supplies',
-            'baby products', 'jewelry', 'phone accessories'
+            'home-garden', 'kitchen', 'sports-fitness',
+            'pet-supplies', 'baby-products', 'arts-crafts',
+            'tools-home-improvement', 'automotive-accessories'
         ]
     
-    def find_trend_articles(self):
-        """Find trending product articles"""
+    def scrape_google_trends_by_country(self):
+        """Get Google Shopping trends with product details"""
         results = []
+        serper_key = os.getenv("SERPER_API_KEY")
         
-        if not self.serper_key:
-            print("  No Serper API key")
+        if not serper_key:
+            print("  Skipping Google Trends (no API key)")
             return results
         
         countries = {
             'us': 'USA',
-            'au': 'Australia',
+            'au': 'Australia', 
             'ae': 'UAE',
             'sa': 'Saudi Arabia'
         }
         
-        queries = [
-            "trending products 2025",
-            "viral products right now",
-            "best selling products 2025",
-            "hot products to sell",
-            "trending pet products",
-            "trending home decor",
-            "trending kitchen gadgets"
+        safe_queries = [
+            "trending home decor 2025",
+            "viral kitchen gadgets",
+            "best fitness accessories",
+            "popular pet products 2025",
+            "trending baby products"
         ]
         
         for country_code, country_name in countries.items():
-            for query in queries[:2]:  # Limit to save API credits
+            for query in safe_queries:
                 try:
                     response = requests.post(
                         'https://google.serper.dev/search',
-                        headers={'X-API-KEY': self.serper_key},
-                        json={'q': query, 'gl': country_code, 'num': 5},
+                        headers={'X-API-KEY': serper_key},
+                        json={
+                            'q': query,
+                            'gl': country_code,
+                            'num': 10
+                        },
                         timeout=10
                     )
                     data = response.json()
                     
-                    for item in data.get('organic', [])[:2]:
+                    for item in data.get('organic', [])[:3]:
+                        # Try to extract product info
+                        title = item.get('title', '')
+                        snippet = item.get('snippet', '')
+                        
+                        # Look for price in snippet
+                        price_match = re.search(r'\$(\d+\.?\d*)', snippet)
+                        price = price_match.group(0) if price_match else 'N/A'
+                        
                         results.append({
+                            'source': f'Google Trends ({country_name})',
+                            'country': country_name,
+                            'category': self._extract_category(query),
+                            'product_name': title,
+                            'description': snippet[:200],
+                            'price': price,
                             'url': item.get('link'),
-                            'title': item.get('title'),
-                            'snippet': item.get('snippet', ''),
-                            'country': country_name
+                            'image_url': item.get('imageUrl', ''),
+                            'timestamp': datetime.now().isoformat()
                         })
-                    
-                    time.sleep(0.5)  # Rate limiting
-                    
+                        
                 except Exception as e:
-                    print(f"Error finding articles for {country_name}: {e}")
+                    print(f"Error with Serper API for {country_name}: {e}")
         
-        return results[:20]  # Limit total articles
+        return results
     
-    def parse_article_for_products(self, article_url):
-        """Extract product names from article"""
-        try:
-            response = requests.get(article_url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }, timeout=10)
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Get article text
-            article_text = soup.get_text()
-            
-            # Use Claude to extract product names
-            prompt = f"""Extract product names from this article about trending products.
-
-Article text (first 3000 chars):
-{article_text[:3000]}
-
-Return ONLY a Python list of product names, like:
-["Product Name 1", "Product Name 2", "Product Name 3"]
-
-Focus on actual product names, not categories. Max 10 products."""
-
-            message = self.claude.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=500,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            response_text = message.content[0].text.strip()
-            
-            # Parse the list
+    def scrape_aliexpress_products(self):
+        """Search AliExpress for dropshipping products with details"""
+        results = []
+        serper_key = os.getenv("SERPER_API_KEY")
+        
+        if not serper_key:
+            return results
+        
+        queries = [
+            "site:aliexpress.com trending home decor",
+            "site:aliexpress.com kitchen gadgets bestseller",
+            "site:aliexpress.com fitness accessories"
+        ]
+        
+        for query in queries:
             try:
-                # Remove markdown code blocks if present
-                if '```' in response_text:
-                    response_text = response_text.split('```')[1]
-                    if response_text.startswith('python'):
-                        response_text = response_text[6:]
-                
-                products = eval(response_text.strip())
-                return products if isinstance(products, list) else []
-            except:
-                return []
-                
-        except Exception as e:
-            print(f"Error parsing article: {e}")
-            return []
-    
-    def search_amazon_product(self, product_name, country_code='us'):
-        """Search Amazon for product and get price"""
-        if not self.serper_key:
-            return None
-        
-        try:
-            # Amazon domain mapping
-            domains = {
-                'us': 'amazon.com',
-                'au': 'amazon.com.au',
-                'ae': 'amazon.ae',
-                'sa': 'amazon.sa'
-            }
-            
-            domain = domains.get(country_code, 'amazon.com')
-            query = f"site:{domain} {product_name}"
-            
-            response = requests.post(
-                'https://google.serper.dev/search',
-                headers={'X-API-KEY': self.serper_key},
-                json={'q': query, 'gl': country_code, 'num': 3},
-                timeout=10
-            )
-            data = response.json()
-            
-            for item in data.get('organic', []):
-                link = item.get('link', '')
-                if domain in link and '/dp/' in link:
-                    # Extract price from snippet
-                    snippet = item.get('snippet', '')
-                    title = item.get('title', '')
-                    
-                    # Look for price patterns
-                    price_patterns = [
-                        r'\$(\d+\.?\d*)',  # $19.99
-                        r'(\d+\.?\d*)\s*USD',  # 19.99 USD
-                        r'AED\s*(\d+\.?\d*)',  # AED 50
-                        r'SAR\s*(\d+\.?\d*)',  # SAR 75
-                    ]
-                    
-                    price = None
-                    for pattern in price_patterns:
-                        match = re.search(pattern, snippet + ' ' + title)
-                        if match:
-                            price = float(match.group(1))
-                            break
-                    
-                    if price:
-                        return {
-                            'product_name': title.split('|')[0].strip()[:100],
-                            'amazon_price': price,
-                            'amazon_url': link,
-                            'country_code': country_code
-                        }
-            
-            time.sleep(0.5)  # Rate limiting
-            return None
-            
-        except Exception as e:
-            print(f"Error searching Amazon: {e}")
-            return None
-    
-    def search_aliexpress_supplier(self, product_name):
-        """Search AliExpress for supplier cost"""
-        if not self.serper_key:
-            return None
-        
-        try:
-            query = f"site:aliexpress.com {product_name}"
-            
-            response = requests.post(
-                'https://google.serper.dev/search',
-                headers={'X-API-KEY': self.serper_key},
-                json={'q': query, 'num': 3},
-                timeout=10
-            )
-            data = response.json()
-            
-            for item in data.get('organic', []):
-                link = item.get('link', '')
-                if 'aliexpress.com' in link:
-                    snippet = item.get('snippet', '')
-                    title = item.get('title', '')
-                    
-                    # Look for price
-                    price_patterns = [
-                        r'\$(\d+\.?\d*)',
-                        r'(\d+\.?\d*)\s*USD',
-                        r'US\s*\$(\d+\.?\d*)'
-                    ]
-                    
-                    for pattern in price_patterns:
-                        match = re.search(pattern, snippet + ' ' + title)
-                        if match:
-                            price = float(match.group(1))
-                            return {
-                                'supplier_price': price,
-                                'supplier_url': link
-                            }
-            
-            time.sleep(0.5)  # Rate limiting
-            return None
-            
-        except Exception as e:
-            print(f"Error searching AliExpress: {e}")
-            return None
-    
-    def calculate_margins(self, amazon_price, supplier_price):
-        """Calculate profit margins"""
-        # Estimate costs
-        shipping_cost = 5.0  # Average shipping
-        transaction_fee = amazon_price * 0.03  # 3% payment processing
-        
-        total_cost = supplier_price + shipping_cost + transaction_fee
-        profit = amazon_price - total_cost
-        margin_percent = (profit / amazon_price * 100) if amazon_price > 0 else 0
-        
-        return {
-            'profit': round(profit, 2),
-            'margin_percent': round(margin_percent, 2),
-            'total_cost': round(total_cost, 2),
-            'recommended_price': round(amazon_price * 0.9, 2)  # Undercut by 10%
-        }
-    
-    def score_product_opportunity(self, product_data):
-        """Score the dropshipping opportunity"""
-        margin = product_data.get('margin_percent', 0)
-        profit = product_data.get('profit', 0)
-        amazon_price = product_data.get('amazon_price', 0)
-        
-        # Scoring logic
-        score = 0
-        
-        # Margin score (max 40 points)
-        if margin >= 50:
-            score += 40
-        elif margin >= 40:
-            score += 30
-        elif margin >= 30:
-            score += 20
-        elif margin >= 20:
-            score += 10
-        
-        # Profit amount score (max 30 points)
-        if profit >= 30:
-            score += 30
-        elif profit >= 20:
-            score += 20
-        elif profit >= 10:
-            score += 10
-        
-        # Price point score (max 30 points)
-        # Sweet spot is $20-$80
-        if 20 <= amazon_price <= 80:
-            score += 30
-        elif 10 <= amazon_price <= 100:
-            score += 20
-        elif amazon_price > 0:
-            score += 10
-        
-        return min(score, 100)
-    
-    def process_products(self):
-        """Main processing pipeline"""
-        all_products = []
-        
-        print("\n📰 Finding trend articles...")
-        articles = self.find_trend_articles()
-        print(f"  Found {len(articles)} articles")
-        
-        for article in articles[:10]:  # Limit articles to process
-            print(f"\n📄 Parsing: {article['title'][:60]}...")
-            products = self.parse_article_for_products(article['url'])
-            print(f"  Extracted {len(products)} product names")
-            
-            for product_name in products[:5]:  # Limit products per article
-                print(f"\n  🔍 Researching: {product_name}")
-                
-                # Search Amazon
-                amazon_data = self.search_amazon_product(product_name, 'us')
-                if not amazon_data:
-                    print(f"    ❌ No Amazon listing found")
-                    continue
-                
-                print(f"    ✓ Amazon: ${amazon_data['amazon_price']}")
-                
-                # Search AliExpress
-                supplier_data = self.search_aliexpress_supplier(product_name)
-                if not supplier_data:
-                    print(f"    ❌ No AliExpress supplier found")
-                    continue
-                
-                print(f"    ✓ AliExpress: ${supplier_data['supplier_price']}")
-                
-                # Calculate margins
-                margins = self.calculate_margins(
-                    amazon_data['amazon_price'],
-                    supplier_data['supplier_price']
+                response = requests.post(
+                    'https://google.serper.dev/search',
+                    headers={'X-API-KEY': serper_key},
+                    json={'q': query, 'num': 5},
+                    timeout=10
                 )
+                data = response.json()
                 
-                print(f"    💰 Margin: {margins['margin_percent']}% (${margins['profit']} profit)")
-                
-                # Only keep if margin > 25%
-                if margins['margin_percent'] < 25:
-                    print(f"    ⚠️  Margin too low, skipping")
-                    continue
-                
-                # Combine data
-                product_data = {
-                    **amazon_data,
-                    **supplier_data,
-                    **margins,
-                    'source_article': article['title'],
-                    'source_url': article['url'],
-                    'country': article['country'],
-                    'category': self._guess_category(product_name),
-                    'timestamp': datetime.now().isoformat()
-                }
-                
-                # Score it
-                product_data['overall_score'] = self.score_product_opportunity(product_data)
-                
-                print(f"    ⭐ Score: {product_data['overall_score']}/100")
-                
-                all_products.append(product_data)
-                
-                time.sleep(1)  # Rate limiting between products
+                for item in data.get('organic', []):
+                    results.append({
+                        'source': 'AliExpress',
+                        'country': 'Global',
+                        'category': self._extract_category(query),
+                        'product_name': item.get('title'),
+                        'description': item.get('snippet', '')[:200],
+                        'supplier_link': item.get('link'),
+                        'url': item.get('link'),
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+            except Exception as e:
+                print(f"Error searching AliExpress: {e}")
         
-        return all_products
+        return results
     
-    def _guess_category(self, product_name):
-        """Guess product category from name"""
-        name_lower = product_name.lower()
-        
-        if any(word in name_lower for word in ['dog', 'cat', 'pet', 'collar', 'leash']):
-            return 'Pet Supplies'
-        elif any(word in name_lower for word in ['kitchen', 'cook', 'food', 'bowl']):
-            return 'Kitchen'
-        elif any(word in name_lower for word in ['home', 'decor', 'furniture', 'lamp']):
+    def _extract_category(self, text):
+        """Extract category from search query"""
+        text_lower = text.lower()
+        if 'home' in text_lower or 'decor' in text_lower:
             return 'Home & Garden'
-        elif any(word in name_lower for word in ['fitness', 'yoga', 'exercise', 'gym']):
+        elif 'kitchen' in text_lower:
+            return 'Kitchen'
+        elif 'fitness' in text_lower or 'sports' in text_lower:
             return 'Fitness'
-        elif any(word in name_lower for word in ['baby', 'infant', 'toddler']):
+        elif 'pet' in text_lower:
+            return 'Pet Supplies'
+        elif 'baby' in text_lower:
             return 'Baby Products'
         else:
             return 'Other'
     
+    def score_products_with_ai(self, products):
+        """Use Claude to score each product opportunity"""
+        scored_products = []
+        
+        # Process in batches to avoid token limits
+        batch_size = 10
+        for i in range(0, len(products), batch_size):
+            batch = products[i:i+batch_size]
+            
+            formatted_batch = "\n\n".join([
+                f"Product {idx}: {p.get('product_name', 'N/A')}\n"
+                f"Category: {p.get('category', 'N/A')}\n"
+                f"Country: {p.get('country', 'N/A')}\n"
+                f"Description: {p.get('description', 'N/A')}\n"
+                f"Price: {p.get('price', 'N/A')}"
+                for idx, p in enumerate(batch, 1)
+            ])
+            
+            prompt = f"""Score these dropshipping product opportunities on a scale of 0-100.
+
+Products to analyze:
+{formatted_batch}
+
+For each product, provide scores in this EXACT format:
+Product X:
+- Overall Score: [0-100]
+- Demand Score: [0-100] (trending, search volume potential)
+- Competition Score: [0-100] (lower = less competition, better)
+- Margin Score: [0-100] (profit potential)
+- Legal Risk Score: [0-100] (lower = safer, avoid branded/electronics)
+- Reasoning: [One sentence why this score]
+
+IMPORTANT:
+- Heavily penalize electronics, branded items, trademarked products
+- Favor unique, non-branded items in safe categories
+- Consider target country's market
+- Be critical and realistic"""
+
+            try:
+                message = self.claude.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                
+                analysis = message.content[0].text
+                scores = self._parse_scores(analysis, batch)
+                scored_products.extend(scores)
+                
+            except Exception as e:
+                print(f"Error scoring batch: {e}")
+                # Add products without scores
+                for p in batch:
+                    p['overall_score'] = 0
+                    p['demand_score'] = 0
+                    p['competition_score'] = 0
+                    p['margin_score'] = 0
+                    p['legal_risk_score'] = 50
+                    p['score_reasoning'] = 'Scoring failed'
+                    scored_products.append(p)
+        
+        return scored_products
+    
+    def _parse_scores(self, analysis, products):
+        """Parse Claude's scoring response"""
+        scored = []
+        lines = analysis.split('\n')
+        
+        current_product_idx = -1
+        current_scores = {}
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Detect product number
+            if line.startswith('Product '):
+                if current_product_idx >= 0 and current_scores:
+                    # Save previous product
+                    if current_product_idx < len(products):
+                        products[current_product_idx].update(current_scores)
+                        scored.append(products[current_product_idx])
+                
+                # Start new product
+                match = re.search(r'Product (\d+)', line)
+                if match:
+                    current_product_idx = int(match.group(1)) - 1
+                    current_scores = {}
+            
+            # Extract scores
+            if 'Overall Score:' in line:
+                score = re.search(r'(\d+)', line)
+                if score:
+                    current_scores['overall_score'] = int(score.group(1))
+            elif 'Demand Score:' in line:
+                score = re.search(r'(\d+)', line)
+                if score:
+                    current_scores['demand_score'] = int(score.group(1))
+            elif 'Competition Score:' in line:
+                score = re.search(r'(\d+)', line)
+                if score:
+                    current_scores['competition_score'] = int(score.group(1))
+            elif 'Margin Score:' in line:
+                score = re.search(r'(\d+)', line)
+                if score:
+                    current_scores['margin_score'] = int(score.group(1))
+            elif 'Legal Risk Score:' in line:
+                score = re.search(r'(\d+)', line)
+                if score:
+                    current_scores['legal_risk_score'] = int(score.group(1))
+            elif 'Reasoning:' in line:
+                reasoning = line.replace('Reasoning:', '').strip()
+                current_scores['score_reasoning'] = reasoning
+        
+        # Save last product
+        if current_product_idx >= 0 and current_scores and current_product_idx < len(products):
+            products[current_product_idx].update(current_scores)
+            scored.append(products[current_product_idx])
+        
+        return scored
+    
     def save_to_google_sheets(self, products):
-        """Save profitable products to Google Sheets"""
-        if not self.sheet_id or not products:
-            print(f"  No products to save or sheet ID missing")
+        """Save scored products to Google Sheets database"""
+        if not self.sheet_id:
+            print("  No Google Sheet ID configured, skipping save")
             return
         
         try:
+            # Prepare rows
             rows = []
             for p in products:
                 row = [
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     p.get('product_name', ''),
                     p.get('category', ''),
-                    p.get('country', 'USA'),
+                    p.get('country', ''),
                     p.get('overall_score', 0),
-                    int(p.get('margin_percent', 0)),  # demand_score = margin
-                    0,  # competition_score (not calculated yet)
-                    int(p.get('profit', 0)),  # margin_score = actual profit
-                    20,  # legal_risk_score (safe products)
-                    f"${p.get('amazon_price', 0)}",
-                    p.get('supplier_url', ''),
-                    '',  # image_url
-                    f"Amazon: ${p.get('amazon_price', 0)} | Supplier: ${p.get('supplier_price', 0)} | Profit: ${p.get('profit', 0)} ({p.get('margin_percent', 0)}% margin)",
-                    f"From: {p.get('source_article', 'Unknown')}. Recommended sell price: ${p.get('recommended_price', 0)}",
-                    'pending',
-                    ''
+                    p.get('demand_score', 0),
+                    p.get('competition_score', 0),
+                    p.get('margin_score', 0),
+                    p.get('legal_risk_score', 0),
+                    p.get('price', 'N/A'),
+                    p.get('supplier_link', p.get('url', '')),
+                    p.get('image_url', ''),
+                    p.get('description', ''),
+                    p.get('score_reasoning', ''),
+                    'pending',  # status
+                    ''  # notes
                 ]
                 rows.append(row)
             
+            # Append to sheet
             body = {'values': rows}
             self.sheets_service.spreadsheets().values().append(
                 spreadsheetId=self.sheet_id,
@@ -429,41 +325,117 @@ Focus on actual product names, not categories. Max 10 products."""
                 body=body
             ).execute()
             
-            print(f"\n✅ Saved {len(rows)} profitable products to Google Sheets")
+            print(f"  Saved {len(rows)} products to Google Sheets")
             
         except Exception as e:
-            print(f"\n❌ Error saving to Sheets: {e}")
+            print(f"  Error saving to Google Sheets: {e}")
+    
+    def create_google_doc_report(self, products):
+        """Create summary Google Doc"""
+        now = datetime.now()
+        title = f"{now.strftime('%Y-%m-%d_%H-%M')}_DS_MULTI"
+        
+        try:
+            doc = self.docs_service.documents().create(
+                body={'title': title}
+            ).execute()
+            
+            doc_id = doc['documentId']
+            
+            # Sort by score
+            sorted_products = sorted(products, key=lambda x: x.get('overall_score', 0), reverse=True)
+            
+            content = f"""MULTI-COUNTRY DROPSHIPPING OPPORTUNITIES
+Generated: {now.strftime('%B %d, %Y at %I:%M %p UTC')}
+Report ID: {now.strftime('%Y%m%d_%H%M')}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 SUMMARY
+
+Total Products Analyzed: {len(products)}
+Products with Score > 70: {len([p for p in products if p.get('overall_score', 0) > 70])}
+Products with Score 50-70: {len([p for p in products if 50 <= p.get('overall_score', 0) <= 70])}
+
+Top 3 Opportunities:
+"""
+            
+            for i, p in enumerate(sorted_products[:3], 1):
+                content += f"\n{i}. {p.get('product_name', 'N/A')} (Score: {p.get('overall_score', 0)})\n"
+                content += f"   Country: {p.get('country', 'N/A')} | Category: {p.get('category', 'N/A')}\n"
+            
+            content += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            content += "TOP 10 SCORED PRODUCTS\n\n"
+            
+            for i, p in enumerate(sorted_products[:10], 1):
+                content += f"{i}. {p.get('product_name', 'N/A')}\n"
+                content += f"   Overall Score: {p.get('overall_score', 0)}/100\n"
+                content += f"   Demand: {p.get('demand_score', 0)} | Competition: {p.get('competition_score', 0)} | Margin: {p.get('margin_score', 0)}\n"
+                content += f"   Legal Risk: {p.get('legal_risk_score', 0)} (lower is safer)\n"
+                content += f"   Country: {p.get('country', 'N/A')} | Category: {p.get('category', 'N/A')}\n"
+                content += f"   Price: {p.get('price', 'N/A')}\n"
+                content += f"   Reasoning: {p.get('score_reasoning', 'N/A')}\n"
+                if p.get('supplier_link'):
+                    content += f"   Supplier: {p.get('supplier_link')}\n"
+                content += "\n"
+            
+            content += "\n\nView all products in the dashboard to approve/reject for your Shopify store.\n"
+            
+            requests_body = [
+                {
+                    'insertText': {
+                        'location': {'index': 1},
+                        'text': content
+                    }
+                }
+            ]
+            
+            self.docs_service.documents().batchUpdate(
+                documentId=doc_id,
+                body={'requests': requests_body}
+            ).execute()
+            
+            print(f"  Report created: https://docs.google.com/document/d/{doc_id}/edit")
+            return doc_id
+            
+        except HttpError as e:
+            print(f"  Error creating Google Doc: {e}")
+            return None
     
     def run_daily_research(self):
         """Main execution"""
-        print("=" * 60)
-        print("🚀 ENHANCED DROPSHIPPING RESEARCH BOT v2")
-        print("=" * 60)
+        print("🌍 Starting multi-country dropshipping research with scoring...")
         print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print()
         
-        products = self.process_products()
+        print("\n📊 Collecting product data...")
         
-        print("\n" + "=" * 60)
-        print(f"📊 RESULTS SUMMARY")
-        print("=" * 60)
-        print(f"Total profitable products found: {len(products)}")
+        google_data = self.scrape_google_trends_by_country()
+        print(f"  ✓ Google Trends: {len(google_data)} items")
         
-        if products:
-            avg_margin = sum(p['margin_percent'] for p in products) / len(products)
-            avg_profit = sum(p['profit'] for p in products) / len(products)
-            print(f"Average margin: {avg_margin:.1f}%")
-            print(f"Average profit: ${avg_profit:.2f}")
-            
-            print("\n💾 Saving to Google Sheets...")
-            self.save_to_google_sheets(products)
-        else:
-            print("\n⚠️  No profitable products found this run")
-            print("Try again later or adjust margin requirements")
+        aliexpress_data = self.scrape_aliexpress_products()
+        print(f"  ✓ AliExpress: {len(aliexpress_data)} items")
+        
+        all_products = google_data + aliexpress_data
+        print(f"\n📦 Total products collected: {len(all_products)}")
+        
+        if len(all_products) == 0:
+            print("❌ No data collected. Exiting.")
+            return
+        
+        print("\n🤖 Scoring products with Claude AI...")
+        scored_products = self.score_products_with_ai(all_products)
+        print(f"  ✓ Scored {len(scored_products)} products")
+        
+        print("\n💾 Saving to Google Sheets...")
+        self.save_to_google_sheets(scored_products)
+        
+        print("\n📝 Creating summary report...")
+        doc_id = self.create_google_doc_report(scored_products)
         
         print("\n✅ Research complete!")
-        print("Open dashboard to review products")
+        print(f"   Products saved to Google Sheets")
+        print(f"   Open dashboard to review and approve products")
 
 if __name__ == "__main__":
-    bot = EnhancedDropshippingBot()
+    bot = MultiCountryDropshippingBot()
     bot.run_daily_research()
