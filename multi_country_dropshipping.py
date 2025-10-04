@@ -1,7 +1,6 @@
 """
-Multi-Country Dropshipping Product Trend Finder
-Targets: USA, Australia, UAE, Saudi Arabia
-Focus: Safe, non-branded trending products
+Multi-Country Dropshipping Product Trend Finder with Scoring
+Saves scored products to Google Sheets for dashboard review
 """
 
 import os
@@ -13,145 +12,32 @@ from bs4 import BeautifulSoup
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+import re
 
 class MultiCountryDropshippingBot:
     def __init__(self):
         self.claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         
-        # Google Docs API
+        # Google APIs
         creds = Credentials.from_authorized_user_info(
             json.loads(os.getenv("GOOGLE_CREDENTIALS"))
         )
         self.docs_service = build('docs', 'v1', credentials=creds)
+        self.sheets_service = build('sheets', 'v4', credentials=creds)
         self.drive_service = build('drive', 'v3', credentials=creds)
         
-        # Safe product categories (avoid copyright/legal issues)
+        # Google Sheet ID for product database
+        self.sheet_id = os.getenv("PRODUCT_SHEET_ID", "")
+        
+        # Safe categories
         self.safe_categories = [
-            'home-garden',
-            'kitchen',
-            'sports-fitness',
-            'pet-supplies',
-            'baby-products',
-            'arts-crafts',
-            'tools-home-improvement',
-            'automotive-accessories',
-            'health-household'
+            'home-garden', 'kitchen', 'sports-fitness',
+            'pet-supplies', 'baby-products', 'arts-crafts',
+            'tools-home-improvement', 'automotive-accessories'
         ]
-    
-    def scrape_amazon_usa(self):
-        """Scrape Amazon.com best sellers (USA)"""
-        results = []
-        
-        for category in self.safe_categories[:5]:
-            try:
-                url = f'https://www.amazon.com/Best-Sellers-{category}/zgbs/{category}'
-                response = requests.get(url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }, timeout=10)
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # Basic scraping - Amazon structure changes frequently
-                print(f"  Scraped Amazon USA - {category}")
-                
-            except Exception as e:
-                print(f"Error scraping Amazon USA {category}: {e}")
-        
-        return results[:20]
-    
-    def scrape_amazon_australia(self):
-        """Scrape Amazon.com.au best sellers (Australia)"""
-        results = []
-        
-        for category in self.safe_categories[:5]:
-            try:
-                url = f'https://www.amazon.com.au/Best-Sellers-{category}/zgbs/{category}'
-                response = requests.get(url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }, timeout=10)
-                
-                print(f"  Scraped Amazon AU - {category}")
-                
-            except Exception as e:
-                print(f"Error scraping Amazon AU {category}: {e}")
-        
-        return results[:20]
-    
-    def scrape_amazon_uae(self):
-        """Scrape Amazon.ae best sellers (UAE)"""
-        results = []
-        
-        for category in self.safe_categories[:5]:
-            try:
-                url = f'https://www.amazon.ae/Best-Sellers-{category}/zgbs/{category}'
-                response = requests.get(url, headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }, timeout=10)
-                
-                print(f"  Scraped Amazon UAE - {category}")
-                
-            except Exception as e:
-                print(f"Error scraping Amazon UAE {category}: {e}")
-        
-        return results[:20]
-    
-    def scrape_etsy_trending(self):
-        """Scrape Etsy trending products (good for handmade/unique items)"""
-        results = []
-        try:
-            url = 'https://www.etsy.com/trending'
-            response = requests.get(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }, timeout=10)
-            
-            print("  Scraped Etsy trending")
-            
-        except Exception as e:
-            print(f"Error scraping Etsy: {e}")
-        
-        return results[:15]
-    
-    def scrape_tiktok_made_me_buy_it(self):
-        """Get products from TikTok viral trends (via Google search)"""
-        results = []
-        serper_key = os.getenv("SERPER_API_KEY")
-        
-        if not serper_key:
-            print("  Skipping TikTok trends (no Serper API key)")
-            return results
-        
-        queries = [
-            "TikTok made me buy it 2025",
-            "viral TikTok products",
-            "TikTok shop trending products"
-        ]
-        
-        for query in queries:
-            try:
-                response = requests.post(
-                    'https://google.serper.dev/search',
-                    headers={'X-API-KEY': serper_key},
-                    json={'q': query, 'num': 10},
-                    timeout=10
-                )
-                data = response.json()
-                
-                for item in data.get('organic', [])[:3]:
-                    results.append({
-                        'source': 'TikTok Trends (via Search)',
-                        'title': item.get('title'),
-                        'snippet': item.get('snippet'),
-                        'url': item.get('link'),
-                        'country': 'Global',
-                        'timestamp': datetime.now().isoformat()
-                    })
-                    
-            except Exception as e:
-                print(f"Error searching TikTok trends: {e}")
-        
-        return results[:15]
     
     def scrape_google_trends_by_country(self):
-        """Get Google Shopping trends for each target country"""
+        """Get Google Shopping trends with product details"""
         results = []
         serper_key = os.getenv("SERPER_API_KEY")
         
@@ -167,15 +53,15 @@ class MultiCountryDropshippingBot:
         }
         
         safe_queries = [
-            "trending home decor products",
+            "trending home decor 2025",
             "viral kitchen gadgets",
             "best fitness accessories",
-            "popular pet products",
-            "trending baby items"
+            "popular pet products 2025",
+            "trending baby products"
         ]
         
         for country_code, country_name in countries.items():
-            for query in safe_queries[:2]:  # Limit to save API credits
+            for query in safe_queries:
                 try:
                     response = requests.post(
                         'https://google.serper.dev/search',
@@ -183,157 +69,261 @@ class MultiCountryDropshippingBot:
                         json={
                             'q': query,
                             'gl': country_code,
-                            'num': 5
+                            'num': 10
                         },
                         timeout=10
                     )
                     data = response.json()
                     
-                    for item in data.get('organic', [])[:2]:
+                    for item in data.get('organic', [])[:3]:
+                        # Try to extract product info
+                        title = item.get('title', '')
+                        snippet = item.get('snippet', '')
+                        
+                        # Look for price in snippet
+                        price_match = re.search(r'\$(\d+\.?\d*)', snippet)
+                        price = price_match.group(0) if price_match else 'N/A'
+                        
                         results.append({
-                            'source': f'Google Search ({country_name})',
-                            'query': query,
-                            'title': item.get('title'),
-                            'snippet': item.get('snippet'),
-                            'url': item.get('link'),
+                            'source': f'Google Trends ({country_name})',
                             'country': country_name,
+                            'category': self._extract_category(query),
+                            'product_name': title,
+                            'description': snippet[:200],
+                            'price': price,
+                            'url': item.get('link'),
+                            'image_url': item.get('imageUrl', ''),
                             'timestamp': datetime.now().isoformat()
                         })
                         
                 except Exception as e:
                     print(f"Error with Serper API for {country_name}: {e}")
         
-        return results[:30]
-    
-    def scrape_aliexpress_dropshipping_center(self):
-        """Get trending products from AliExpress Dropshipping Center"""
-        results = []
-        try:
-            url = 'https://www.aliexpress.com/premium/dropshipping-products.html'
-            response = requests.get(url, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }, timeout=10)
-            
-            print("  Scraped AliExpress dropshipping center")
-            
-        except Exception as e:
-            print(f"Error scraping AliExpress: {e}")
-        
-        return results[:20]
-    
-    def scrape_reddit_dropshipping(self):
-        """Scrape dropshipping-related subreddits"""
-        results = []
-        # Would use PRAW API like the SaaS bot
-        # Placeholder for now
         return results
     
-    def analyze_with_ai(self, data):
-        """Use Claude to analyze multi-country dropshipping opportunities"""
+    def scrape_aliexpress_products(self):
+        """Search AliExpress for dropshipping products with details"""
+        results = []
+        serper_key = os.getenv("SERPER_API_KEY")
         
-        formatted_data = "\n\n".join([
-            f"Country: {item.get('country', 'N/A')}\n"
-            f"Source: {item.get('source', 'Unknown')}\n"
-            f"Category: {item.get('category', 'N/A')}\n"
-            f"Product/Topic: {item.get('title', item.get('snippet', 'N/A'))}\n"
-            f"URL: {item.get('url', 'N/A')}"
-            for item in data
-        ])
+        if not serper_key:
+            return results
         
-        prompt = f"""You are an international e-commerce expert specializing in safe, legal dropshipping across USA, Australia, UAE, and Saudi Arabia.
-
-IMPORTANT CONSTRAINTS:
-- AVOID: Electronics (phones, laptops, TVs), branded products, trademarked items, copyrighted characters
-- FOCUS: Home decor, kitchen gadgets, fitness accessories, pet supplies, baby products, jewelry, phone accessories (generic)
-
-Analyze this data collected today ({datetime.now().strftime('%Y-%m-%d')}):
-
-{formatted_data}
-
-Provide analysis for each target market:
-
-1. TOP TRENDING PRODUCTS BY COUNTRY:
-
-   USA:
-   - 3 safe product opportunities
-   - Price range in USD
-   - Target demographics
-   - Marketing angle
-   - Profit margin estimate
-
-   AUSTRALIA:
-   - 3 safe product opportunities  
-   - Price range in AUD
-   - Target demographics
-   - Shipping considerations
-   - Profit margin estimate
-
-   UAE:
-   - 3 safe product opportunities
-   - Price range in AED
-   - Cultural considerations
-   - Payment preferences (COD important)
-   - Profit margin estimate
-
-   SAUDI ARABIA:
-   - 3 safe product opportunities
-   - Price range in SAR
-   - Cultural sensitivities
-   - Religious/seasonal factors
-   - Profit margin estimate
-
-2. UNIVERSAL TRENDING CATEGORIES:
-   - Products that work across all 4 markets
-   - Why they're trending globally
-   - Sourcing recommendations (AliExpress, CJ Dropshipping, etc.)
-
-3. MARKET-SPECIFIC INSIGHTS:
-   - USA: Competition level, shipping expectations, return rates
-   - Australia: Shipping times tolerance, popular niches
-   - UAE: Luxury preferences, social media behavior
-   - Saudi Arabia: Festival timing, gender-specific products
-
-4. LEGAL & SAFETY CHECK:
-   - Categories to completely avoid
-   - Import restrictions by country
-   - Certification requirements (if any)
-
-5. SOURCING STRATEGY:
-   - Best suppliers for each product type
-   - Quality control tips
-   - Shipping methods by country
-   - Cost breakdown
-
-6. MARKETING RECOMMENDATIONS:
-   - USA: Facebook Ads, Google Shopping
-   - Australia: Instagram, TikTok
-   - UAE/Saudi: Instagram, Snapchat, WhatsApp marketing
-   - Budget allocation per country
-
-7. ACTION ITEMS:
-   - Top 3 products to test FIRST (specify country)
-   - Store setup priorities for multi-country
-   - First week testing plan
-   - Budget needed per country
-
-Focus on SAFE, non-branded products with low legal risk. Prioritize profit margins and market demand."""
-
-        try:
-            message = self.claude.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4500,
-                messages=[{"role": "user", "content": prompt}]
-            )
+        queries = [
+            "site:aliexpress.com trending home decor",
+            "site:aliexpress.com kitchen gadgets bestseller",
+            "site:aliexpress.com fitness accessories"
+        ]
+        
+        for query in queries:
+            try:
+                response = requests.post(
+                    'https://google.serper.dev/search',
+                    headers={'X-API-KEY': serper_key},
+                    json={'q': query, 'num': 5},
+                    timeout=10
+                )
+                data = response.json()
+                
+                for item in data.get('organic', []):
+                    results.append({
+                        'source': 'AliExpress',
+                        'country': 'Global',
+                        'category': self._extract_category(query),
+                        'product_name': item.get('title'),
+                        'description': item.get('snippet', '')[:200],
+                        'supplier_link': item.get('link'),
+                        'url': item.get('link'),
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+            except Exception as e:
+                print(f"Error searching AliExpress: {e}")
+        
+        return results
+    
+    def _extract_category(self, text):
+        """Extract category from search query"""
+        text_lower = text.lower()
+        if 'home' in text_lower or 'decor' in text_lower:
+            return 'Home & Garden'
+        elif 'kitchen' in text_lower:
+            return 'Kitchen'
+        elif 'fitness' in text_lower or 'sports' in text_lower:
+            return 'Fitness'
+        elif 'pet' in text_lower:
+            return 'Pet Supplies'
+        elif 'baby' in text_lower:
+            return 'Baby Products'
+        else:
+            return 'Other'
+    
+    def score_products_with_ai(self, products):
+        """Use Claude to score each product opportunity"""
+        scored_products = []
+        
+        # Process in batches to avoid token limits
+        batch_size = 10
+        for i in range(0, len(products), batch_size):
+            batch = products[i:i+batch_size]
             
-            return message.content[0].text
+            formatted_batch = "\n\n".join([
+                f"Product {idx}: {p.get('product_name', 'N/A')}\n"
+                f"Category: {p.get('category', 'N/A')}\n"
+                f"Country: {p.get('country', 'N/A')}\n"
+                f"Description: {p.get('description', 'N/A')}\n"
+                f"Price: {p.get('price', 'N/A')}"
+                for idx, p in enumerate(batch, 1)
+            ])
+            
+            prompt = f"""Score these dropshipping product opportunities on a scale of 0-100.
+
+Products to analyze:
+{formatted_batch}
+
+For each product, provide scores in this EXACT format:
+Product X:
+- Overall Score: [0-100]
+- Demand Score: [0-100] (trending, search volume potential)
+- Competition Score: [0-100] (lower = less competition, better)
+- Margin Score: [0-100] (profit potential)
+- Legal Risk Score: [0-100] (lower = safer, avoid branded/electronics)
+- Reasoning: [One sentence why this score]
+
+IMPORTANT:
+- Heavily penalize electronics, branded items, trademarked products
+- Favor unique, non-branded items in safe categories
+- Consider target country's market
+- Be critical and realistic"""
+
+            try:
+                message = self.claude.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                
+                analysis = message.content[0].text
+                scores = self._parse_scores(analysis, batch)
+                scored_products.extend(scores)
+                
+            except Exception as e:
+                print(f"Error scoring batch: {e}")
+                # Add products without scores
+                for p in batch:
+                    p['overall_score'] = 0
+                    p['demand_score'] = 0
+                    p['competition_score'] = 0
+                    p['margin_score'] = 0
+                    p['legal_risk_score'] = 50
+                    p['score_reasoning'] = 'Scoring failed'
+                    scored_products.append(p)
+        
+        return scored_products
+    
+    def _parse_scores(self, analysis, products):
+        """Parse Claude's scoring response"""
+        scored = []
+        lines = analysis.split('\n')
+        
+        current_product_idx = -1
+        current_scores = {}
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Detect product number
+            if line.startswith('Product '):
+                if current_product_idx >= 0 and current_scores:
+                    # Save previous product
+                    if current_product_idx < len(products):
+                        products[current_product_idx].update(current_scores)
+                        scored.append(products[current_product_idx])
+                
+                # Start new product
+                match = re.search(r'Product (\d+)', line)
+                if match:
+                    current_product_idx = int(match.group(1)) - 1
+                    current_scores = {}
+            
+            # Extract scores
+            if 'Overall Score:' in line:
+                score = re.search(r'(\d+)', line)
+                if score:
+                    current_scores['overall_score'] = int(score.group(1))
+            elif 'Demand Score:' in line:
+                score = re.search(r'(\d+)', line)
+                if score:
+                    current_scores['demand_score'] = int(score.group(1))
+            elif 'Competition Score:' in line:
+                score = re.search(r'(\d+)', line)
+                if score:
+                    current_scores['competition_score'] = int(score.group(1))
+            elif 'Margin Score:' in line:
+                score = re.search(r'(\d+)', line)
+                if score:
+                    current_scores['margin_score'] = int(score.group(1))
+            elif 'Legal Risk Score:' in line:
+                score = re.search(r'(\d+)', line)
+                if score:
+                    current_scores['legal_risk_score'] = int(score.group(1))
+            elif 'Reasoning:' in line:
+                reasoning = line.replace('Reasoning:', '').strip()
+                current_scores['score_reasoning'] = reasoning
+        
+        # Save last product
+        if current_product_idx >= 0 and current_scores and current_product_idx < len(products):
+            products[current_product_idx].update(current_scores)
+            scored.append(products[current_product_idx])
+        
+        return scored
+    
+    def save_to_google_sheets(self, products):
+        """Save scored products to Google Sheets database"""
+        if not self.sheet_id:
+            print("  No Google Sheet ID configured, skipping save")
+            return
+        
+        try:
+            # Prepare rows
+            rows = []
+            for p in products:
+                row = [
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    p.get('product_name', ''),
+                    p.get('category', ''),
+                    p.get('country', ''),
+                    p.get('overall_score', 0),
+                    p.get('demand_score', 0),
+                    p.get('competition_score', 0),
+                    p.get('margin_score', 0),
+                    p.get('legal_risk_score', 0),
+                    p.get('price', 'N/A'),
+                    p.get('supplier_link', p.get('url', '')),
+                    p.get('image_url', ''),
+                    p.get('description', ''),
+                    p.get('score_reasoning', ''),
+                    'pending',  # status
+                    ''  # notes
+                ]
+                rows.append(row)
+            
+            # Append to sheet
+            body = {'values': rows}
+            self.sheets_service.spreadsheets().values().append(
+                spreadsheetId=self.sheet_id,
+                range='Products!A:P',
+                valueInputOption='RAW',
+                body=body
+            ).execute()
+            
+            print(f"  Saved {len(rows)} products to Google Sheets")
             
         except Exception as e:
-            print(f"Error with Claude API: {e}")
-            return f"Error analyzing data: {e}"
+            print(f"  Error saving to Google Sheets: {e}")
     
-    def create_google_doc(self, analysis, data_summary):
-        """Create Google Doc with multi-country dropshipping report"""
-        
+    def create_google_doc_report(self, products):
+        """Create summary Google Doc"""
         now = datetime.now()
         title = f"{now.strftime('%Y-%m-%d_%H-%M')}_DS_MULTI"
         
@@ -344,60 +334,44 @@ Focus on SAFE, non-branded products with low legal risk. Prioritize profit margi
             
             doc_id = doc['documentId']
             
-            content = f"""MULTI-COUNTRY DROPSHIPPING TRENDS REPORT
-Target Markets: USA | AUSTRALIA | UAE | SAUDI ARABIA
+            # Sort by score
+            sorted_products = sorted(products, key=lambda x: x.get('overall_score', 0), reverse=True)
+            
+            content = f"""MULTI-COUNTRY DROPSHIPPING OPPORTUNITIES
 Generated: {now.strftime('%B %d, %Y at %I:%M %p UTC')}
 Report ID: {now.strftime('%Y%m%d_%H%M')}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📊 DATA SOURCES
+📊 SUMMARY
 
-Collection Time: {now.strftime('%Y-%m-%d %H:%M:%S')}
+Total Products Analyzed: {len(products)}
+Products with Score > 70: {len([p for p in products if p.get('overall_score', 0) > 70])}
+Products with Score 50-70: {len([p for p in products if 50 <= p.get('overall_score', 0) <= 70])}
 
-Platforms Monitored:
-• Amazon.com (USA)
-• Amazon.com.au (Australia)
-• Amazon.ae (UAE)
-• Google Trends (USA, AU, UAE, SA)
-• TikTok Viral Products
-• Etsy Trending
-• AliExpress Dropshipping Center
-
-Total Data Points: {len(data_summary)}
-
-PRODUCT FOCUS: Safe categories (home, kitchen, fitness, pets, baby)
-AVOIDING: Electronics, branded items, trademarked products
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-AI ANALYSIS
-
-{analysis}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📦 RAW DATA BY COUNTRY
-
+Top 3 Opportunities:
 """
             
-            # Group data by country
-            by_country = {}
-            for item in data_summary:
-                country = item.get('country', 'Global')
-                if country not in by_country:
-                    by_country[country] = []
-                by_country[country].append(item)
+            for i, p in enumerate(sorted_products[:3], 1):
+                content += f"\n{i}. {p.get('product_name', 'N/A')} (Score: {p.get('overall_score', 0)})\n"
+                content += f"   Country: {p.get('country', 'N/A')} | Category: {p.get('category', 'N/A')}\n"
             
-            for country, items in by_country.items():
-                content += f"\n=== {country.upper()} ===\n"
-                for i, item in enumerate(items[:10], 1):
-                    content += f"\n{i}. {item.get('title', 'N/A')}\n"
-                    if item.get('category'):
-                        content += f"   Category: {item.get('category')}\n"
-                    if item.get('url'):
-                        content += f"   Link: {item.get('url')}\n"
-                    content += f"   Source: {item.get('source', 'N/A')}\n"
+            content += f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            content += "TOP 10 SCORED PRODUCTS\n\n"
+            
+            for i, p in enumerate(sorted_products[:10], 1):
+                content += f"{i}. {p.get('product_name', 'N/A')}\n"
+                content += f"   Overall Score: {p.get('overall_score', 0)}/100\n"
+                content += f"   Demand: {p.get('demand_score', 0)} | Competition: {p.get('competition_score', 0)} | Margin: {p.get('margin_score', 0)}\n"
+                content += f"   Legal Risk: {p.get('legal_risk_score', 0)} (lower is safer)\n"
+                content += f"   Country: {p.get('country', 'N/A')} | Category: {p.get('category', 'N/A')}\n"
+                content += f"   Price: {p.get('price', 'N/A')}\n"
+                content += f"   Reasoning: {p.get('score_reasoning', 'N/A')}\n"
+                if p.get('supplier_link'):
+                    content += f"   Supplier: {p.get('supplier_link')}\n"
+                content += "\n"
+            
+            content += "\n\nView all products in the dashboard to approve/reject for your Shopify store.\n"
             
             requests_body = [
                 {
@@ -413,65 +387,46 @@ AI ANALYSIS
                 body={'requests': requests_body}
             ).execute()
             
-            print(f"✅ Report created: https://docs.google.com/document/d/{doc_id}/edit")
+            print(f"  Report created: https://docs.google.com/document/d/{doc_id}/edit")
             return doc_id
             
         except HttpError as e:
-            print(f"Error creating Google Doc: {e}")
+            print(f"  Error creating Google Doc: {e}")
             return None
     
     def run_daily_research(self):
         """Main execution"""
-        print("🌍 Starting multi-country dropshipping trend research...")
-        print(f"🎯 Target Markets: USA | Australia | UAE | Saudi Arabia")
+        print("🌍 Starting multi-country dropshipping research with scoring...")
         print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        print("\n📊 Collecting data from international platforms...")
-        
-        usa_data = self.scrape_amazon_usa()
-        print(f"  ✓ USA: {len(usa_data)} items")
-        
-        au_data = self.scrape_amazon_australia()
-        print(f"  ✓ Australia: {len(au_data)} items")
-        
-        uae_data = self.scrape_amazon_uae()
-        print(f"  ✓ UAE: {len(uae_data)} items")
+        print("\n📊 Collecting product data...")
         
         google_data = self.scrape_google_trends_by_country()
-        print(f"  ✓ Google Trends (All Countries): {len(google_data)} items")
+        print(f"  ✓ Google Trends: {len(google_data)} items")
         
-        tiktok_data = self.scrape_tiktok_made_me_buy_it()
-        print(f"  ✓ TikTok Trends: {len(tiktok_data)} items")
-        
-        etsy_data = self.scrape_etsy_trending()
-        print(f"  ✓ Etsy: {len(etsy_data)} items")
-        
-        aliexpress_data = self.scrape_aliexpress_dropshipping_center()
+        aliexpress_data = self.scrape_aliexpress_products()
         print(f"  ✓ AliExpress: {len(aliexpress_data)} items")
         
-        all_data = usa_data + au_data + uae_data + google_data + tiktok_data + etsy_data + aliexpress_data
-        print(f"\n📦 Total data points: {len(all_data)}")
+        all_products = google_data + aliexpress_data
+        print(f"\n📦 Total products collected: {len(all_products)}")
         
-        if len(all_data) == 0:
+        if len(all_products) == 0:
             print("❌ No data collected. Exiting.")
             return
         
-        print("\n🤖 Analyzing with Claude AI...")
-        print("   Focusing on safe, non-branded products...")
-        analysis = self.analyze_with_ai(all_data)
-        print("  ✓ Analysis complete")
+        print("\n🤖 Scoring products with Claude AI...")
+        scored_products = self.score_products_with_ai(all_products)
+        print(f"  ✓ Scored {len(scored_products)} products")
         
-        print("\n📝 Creating Google Doc report...")
-        doc_id = self.create_google_doc(analysis, all_data)
+        print("\n💾 Saving to Google Sheets...")
+        self.save_to_google_sheets(scored_products)
         
-        if doc_id:
-            print(f"\n✅ SUCCESS! Report available at:")
-            print(f"https://docs.google.com/document/d/{doc_id}/edit")
-        else:
-            print("\n⚠️  Report creation failed, but here's the analysis:")
-            print(analysis)
+        print("\n📝 Creating summary report...")
+        doc_id = self.create_google_doc_report(scored_products)
         
-        print("\n🎉 Multi-country dropshipping research complete!")
+        print("\n✅ Research complete!")
+        print(f"   Products saved to Google Sheets")
+        print(f"   Open dashboard to review and approve products")
 
 if __name__ == "__main__":
     bot = MultiCountryDropshippingBot()
