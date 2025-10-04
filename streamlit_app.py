@@ -33,7 +33,7 @@ def load_products():
         
         result = service.spreadsheets().values().get(
             spreadsheetId=sheet_id,
-            range='Products!A2:P1000'  # Skip header row
+            range='Products!A2:P1000'
         ).execute()
         
         values = result.get('values', [])
@@ -41,7 +41,7 @@ def load_products():
         if not values:
             return pd.DataFrame()
         
-        # Create DataFrame
+        # Column names
         columns = [
             'date_added', 'product_name', 'category', 'country',
             'overall_score', 'demand_score', 'competition_score',
@@ -49,7 +49,13 @@ def load_products():
             'image_url', 'description', 'reasoning', 'status', 'notes'
         ]
         
-        df = pd.DataFrame(values, columns=columns)
+        # Pad rows to ensure all have 16 columns
+        padded_values = []
+        for row in values:
+            padded_row = row + [''] * (16 - len(row))  # Pad with empty strings
+            padded_values.append(padded_row[:16])  # Ensure exactly 16 columns
+        
+        df = pd.DataFrame(padded_values, columns=columns)
         
         # Convert score columns to numeric
         score_cols = ['overall_score', 'demand_score', 'competition_score', 
