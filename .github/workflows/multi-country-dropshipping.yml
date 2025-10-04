@@ -24,7 +24,7 @@ jobs:
       - name: Run multi-country dropshipping bot
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
           PRODUCT_SHEET_ID: ${{ secrets.PRODUCT_SHEET_ID }}  # ADD THIS LINE
         run: python multi_country_dropshipping.py
