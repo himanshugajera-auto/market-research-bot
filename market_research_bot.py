@@ -1,6 +1,7 @@
 """
 Free AI Market Research Bot
 Runs daily via GitHub Actions
+Updated to use Google Service Account instead of OAuth
 """
 
 import os
@@ -8,7 +9,7 @@ import json
 from datetime import datetime
 import anthropic
 import praw
-from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account  # ← NEW IMPORT
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import requests
@@ -26,12 +27,21 @@ class MarketResearchBot:
             user_agent="MarketResearch/1.0"
         )
         
-        # Google Docs API (Free)
-        creds = Credentials.from_authorized_user_info(
-            json.loads(os.getenv("GOOGLE_CREDENTIALS"))
-        )
-        self.docs_service = build('docs', 'v1', credentials=creds)
-        self.drive_service = build('drive', 'v3', credentials=creds)
+        # Google Docs API - Service Account (Updated)
+        try:
+            creds = service_account.Credentials.from_service_account_info(
+                json.loads(os.getenv("GOOGLE_CREDENTIALS")),
+                scopes=[
+                    'https://www.googleapis.com/auth/documents',
+                    'https://www.googleapis.com/auth/drive'
+                ]
+            )
+            self.docs_service = build('docs', 'v1', credentials=creds)
+            self.drive_service = build('drive', 'v3', credentials=creds)
+        except Exception as e:
+            print(f"⚠️  Google authentication failed: {e}")
+            self.docs_service = None
+            self.drive_service = None
         
     def scrape_reddit(self):
         """Scrape Reddit for pain points and opportunities"""
@@ -298,6 +308,13 @@ Format your response in clear sections with headers."""
     def create_google_doc(self, analysis, data_summary):
         """Create a Google Doc with the research report"""
         
+        # Check if Google services are available
+        if not self.docs_service or not self.drive_service:
+            print("⚠️  Google Docs service not available. Skipping report creation.")
+            print("\nAnalysis Result:")
+            print(analysis)
+            return None
+        
         now = datetime.now()
         title = f"{now.strftime('%Y-%m-%d_%H-%M')}_MR"
         
@@ -410,8 +427,7 @@ Top Discussions:
             print(f"\n✅ SUCCESS! Report available at:")
             print(f"https://docs.google.com/document/d/{doc_id}/edit")
         else:
-            print("\n⚠️  Report creation failed, but here's the analysis:")
-            print(analysis)
+            print("\n⚠️  Report creation skipped, but analysis is complete above.")
         
         print("\n🎉 Daily research complete!")
 
